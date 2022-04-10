@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Dec 14 13:12:38 2021
+
+@author: himangisrivastava
+"""
+
+import csv
+import os
+import glob
+import pandas as pd
+import os
+import shutil
+
+
+import matplotlib.pyplot as plt
+import networkx as nx
+import streamlit as st
+import streamlit.components.v1 as components
+from pyvis.network import Network
+
+def make_edge_df(G):
+    edges = {}
+    for source, target, attribute in G.edges(data=True):
+
+        if not edges.get('source'):
+            edges['source'] = [source]
+        else:
+            edges['source'].append(source)
+
+        if not edges.get('target'):
+            edges['target'] = [target]
+        else:
+            edges['target'].append(target)
+
+        for key, value in attribute.items():
+            if not edges.get(key):
+                edges[key] = [value]
+            else:
+                edges[key].append(value)
+    return pd.DataFrame(edges)
+
+
+def visualize(G,SG,output_filename='graph.html',show_buttons=False,only_physics_buttons=False):
+    N = Network(height='100%', width='100%', font_color='black', directed=True)
+    # uncomment the following if the graph is large
+    # N.barnes_hut(spring_strength=0.006)
+
+    for n in G.nodes():
+        if n in SG:  # if the node is part of the sub-graph
+            color = 'green'
+        else:
+            color = 'red'
+        N.add_node(n, label=n, color=color)
+    
+    for e in G.edges():
+        u=e[0]
+        v=e[1] 
+        N.add_edge(u,v,width=G[u][v]['weight'])
+        
+        
+    if show_buttons:
+            if only_physics_buttons:
+                N.show_buttons(filter_=['physics'])
+            else:
+                N.show_buttons()
+    return N.show(output_filename)
+
+
+def unique(list1):
+ 
+    # initialize a null list
+    unique_list = []
+     
+    # traverse for all elements
+    for x in list1:
+        # check if exists in unique_list or not
+        if x not in unique_list:
+            unique_list.append(x)
+    return(unique_list)
+
+
+
+os.chdir("res2_corum_coefs")
+extension = 'ElasticNet.csv'
+all_filenames = [i for i in glob.glob('*_{}'.format(extension))]
+
+dfs = []
+for file in all_filenames:
+    df = pd.read_csv(file)
+    df = df.iloc[: , 1:]
+    dfs.append(df)
+
+
+proteins=[]
+for i in all_filenames:
+    partitioned_string = i.partition('_')
+    protein = partitioned_string[0]
+    proteins.append(protein)
+
+for  i in range(len(dfs)):
+    dfs[i]['protein']=proteins[i]
+    dfs[i]=dfs[i][['protein','Transcript','Coef']]
+
+    
+merged = pd.concat(dfs) 
+merged['Coef']=abs(merged['Coef'].astype(float)) 
+merged=merged[merged['Coef']>0.05] 
+merged['Coef']=merged['Coef']*10
+merged['Transcript'] = merged['Transcript'].str.replace('_transcriptomics', '')
+
+
+extension = 'RandomForest.csv'
+all_filenames = [i for i in glob.glob('*_{}'.format(extension))]
+
+
+df2s = []
+for file in all_filenames:
+    df2 = pd.read_csv(file)
+    df2 = df2.iloc[: , 1:]
+    df2s.append(df2) 
+    
+    
+proteins=[]
+for i in all_filenames:
+    partitioned_string = i.partition('_')
+    protein = partitioned_string[0]
+    proteins.append(protein)
+
+for  i in range(len(df2s)):
+    df2s[i]['protein']=proteins[i]
+    df2s[i]=df2s[i][['protein','Transcript','Feature_Importance']]
+merged2 = pd.concat(df2s) 
+merged2['Transcript'] = merged2['Transcript'].str.replace('_transcriptomics', '')
+
+
+merged2=merged2[merged2['Transcript'].isin(merged['Transcript'])]
+
+result = pd.merge(merged, merged2, how="left", on=["protein","Transcript"])
+result= result.fillna(0)
+result['rank']=result.groupby("protein")["Feature_Importance"].rank("dense", ascending=True)
+
+result["weight"]=result["Coef"]+result['rank']
+
+Giant = nx.from_pandas_edgelist(result,
+                            source='Transcript',
+                            target='protein',
+                            edge_attr='weight')
+
+graphs = list(nx.connected_component_subgraphs(Giant))
+
+
+for k in range(len(graphs)):
+    dfs=make_edge_df(graphs[k])
+    dfs.to_csv(str(k)+'.csv')
+G=[] 
+p=[]
+for k in range(len(graphs)):
+    df=pd.read_csv(str(k)+'.csv', index_col = False)
+    df = df.iloc[: , 1:]
+    proteins= df.iloc[:,0].tolist()
+    p.append(unique(proteins))
+    transcriptomics= df.iloc[:,1].tolist()
+    G.append(nx.from_pandas_edgelist(df,
+                            source='target',
+                            target='source',
+                            edge_attr='weight',create_using=nx.DiGraph()))
+
+
+for k in range(len(G)):
+    visualize(G[k],p[k],output_filename=str(k)+'.html',show_buttons=True,only_physics_buttons=True)
+
+
